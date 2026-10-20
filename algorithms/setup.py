@@ -38,6 +38,10 @@ SCRIPTS = [
      'scripts/task1c/path_follower.py',
     # 'scripts/task1c/task1c.py',
     'scripts/task1a/ore_detector.py',
+    'scripts/task2a/task2A_perception.py',
+    'scripts/task2a/task2A_manipulation.py',
+    'scripts/task2b/task2B_planning.py',
+    'scripts/task2b/task2B_navigation.py',
 ]
 
 setup(
