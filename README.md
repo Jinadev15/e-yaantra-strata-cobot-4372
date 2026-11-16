@@ -26,6 +26,7 @@ time marks, `(600 − T) × 0.02`, which would need T = 0 seconds for full marks
 
 ## Contents
 
+0. [For the person doing the final recordings](#0-for-the-person-doing-the-final-recordings)
 1. [What you need](#1-what-you-need)
 2. [One-time setup](#2-one-time-setup)
 3. [Opening a terminal the right way](#3-opening-a-terminal-the-right-way)
@@ -40,6 +41,22 @@ time marks, `(600 − T) × 0.02`, which would need T = 0 seconds for full marks
 12. [Rules we never break](#12-rules-we-never-break)
 
 ---
+
+## 0. For the person doing the final recordings
+
+Your job: set the project up once, then record **one Task 3A evaluation** and **one Task 3B
+evaluation** (which is two runs), check both results, pack them and send them to Jinadev. In order:
+
+1. Section 2, once: install, clone, build, check the graphics card. About 1 hour, mostly downloads.
+2. Section 5: one practice run, to see that everything works on your laptop.
+3. Section 4 checklist, then section 6 (3A) while recording the screen (section 8).
+4. Section 4 checklist again, then section 7 (3B) while recording.
+5. Section 8.4: check the results, the zips and the videos.
+6. Section 8.5: send everything to Jinadev.
+
+Expected results on a working setup: 3A about 28 / 30, 3B about 47 / 50, each run lasting about
+2.5 to 3 minutes. Every run should show `Detected 5 of 5, dropped 5 of 5, eBot legs 2 of 2, and
+the bonus`.
 
 ## 1. What you need
 
@@ -78,8 +95,11 @@ take 20 to 40 minutes):
 
 ```bash
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y ros-jazzy-desktop-full python3-colcon-common-extensions git
+sudo apt install -y ros-jazzy-desktop-full python3-colcon-common-extensions git zip unzip ffmpeg mesa-utils
 ```
+
+(`zip` packs the submission, `ffmpeg` converts the video, `mesa-utils` gives the graphics check
+of section 2.6.)
 
 Check it worked (one line):
 
@@ -141,6 +161,32 @@ When the team pushes new code, update and rebuild (one paste):
 cd ~/ros2_ws/src && git pull && cd ~/ros2_ws && source /opt/ros/jazzy/setup.bash && colcon build --packages-select algorithms
 ```
 
+### 2.6 Check the graphics card
+
+Gazebo must draw on the real graphics card, or it becomes very slow. One line in a normal terminal:
+
+```bash
+glxinfo -B | grep -E "OpenGL renderer"
+```
+
+- It names your **NVIDIA** or **AMD Radeon** card, or an Intel **Iris/UHD** card on an Intel-only
+  laptop: good.
+- It says **`llvmpipe`**: the graphics driver is missing. For an NVIDIA card run
+  `sudo ubuntu-drivers install`, restart the laptop, and check again.
+- On a laptop with **both** Intel and NVIDIA graphics, check the NVIDIA card is usable:
+
+  ```bash
+  __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia glxinfo -B | grep -E "OpenGL renderer"
+  ```
+
+  If that names the NVIDIA card, paste these two lines into the **world terminal (T1)** each time,
+  before the `ros2 launch` line, so Gazebo draws on it:
+
+  ```bash
+  export __NV_PRIME_RENDER_OFFLOAD=1
+  export __GLX_VENDOR_LIBRARY_NAME=nvidia
+  ```
+
 ## 3. Opening a terminal the right way
 
 Every ROS 2 command below runs in a terminal that has been **prepared** with these two lines.
@@ -190,7 +236,21 @@ running that it cannot inspect, and Gazebo slows down badly when the computer is
    is a network helper that Ubuntu starts by itself; end it with `kill <number>`, using the first
    number on that line.
 4. **Nothing left over from an earlier run**: every terminal from the last run is closed, or was
-   stopped with Ctrl + C.
+   stopped with Ctrl + C. If unsure, restart the laptop.
+5. **Enough disk space** for the recording (one line; `Avail` should be at least 5G):
+
+   ```bash
+   df -h ~ | tail -1
+   ```
+
+6. **Another ROS computer on the same Wi-Fi?** (for example a teammate running the simulation at
+   the same time) ROS 2 programs on one network find each other, and two simulations would mix.
+   Then either use a different network, or paste this line into **every** terminal of the run
+   (all six), right after preparing it:
+
+   ```bash
+   export ROS_DOMAIN_ID=43
+   ```
 
 ## 5. A practice run (no evaluator)
 
@@ -342,22 +402,42 @@ Both runs must score, or the task scores 0. Start the screen recording first.
 
 ## 8. Recording and packing the submission
 
-**Recording.** Ubuntu's own screen recorder: press **Ctrl + Shift + Alt + R** to start and the
-same keys to stop (a red dot shows in the top bar while it records). The video lands in
-`~/Videos/Screencasts/` as a `.webm` file. Record the **whole screen** from before the evaluator
-starts until the marks are printed: the video must show the launch, `Ready`, the robots working
-and the marks.
+### 8.1 Recording the screen
 
-**Convert the video to mp4** (normal terminal; install ffmpeg once with `sudo apt install -y ffmpeg`).
-Replace `<file>` with the recording's name; one paste, wait until it finishes:
+Ubuntu 24.04 has a screen recorder built in:
+
+1. Arrange the windows first: the Gazebo window big enough to see the robots, and the evaluator
+   terminal (T2) visible next to it, so its `Ready` and the marks are on screen.
+2. Press the **Print Screen** key (`PrtSc`). A bar appears at the bottom.
+3. Click the **video camera** icon (to record video instead of a picture), choose **Screen**, and
+   click the round **record** button. A red dot with a timer appears in the top-right corner.
+4. Do the evaluation (section 6 or 7).
+5. When the marks are printed, click the **red dot** in the top-right corner to stop.
+
+The video is saved in `~/Videos/Screencasts/` as a `.webm` file. It must show, without cuts: the
+evaluator starting, the world launching, `Ready`, the robots working, and the printed marks.
+
+### 8.2 Converting the video
+
+List the recordings to get the file name (one line):
+
+```bash
+ls -lt ~/Videos/Screencasts/
+```
+
+Then convert, replacing `<file>` with the recording's name without `.webm` (one paste, wait until
+it finishes; it takes a few minutes):
 
 ```bash
 cd ~/Videos/Screencasts && ffmpeg -y -i "<file>.webm" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -crf 26 -preset medium -pix_fmt yuv420p -an task3a_run.mp4
 ```
 
-(For 3B, name the output `task3b_run.mp4`.) Upload the mp4 to YouTube as **Unlisted**.
+(For 3B, name the output `task3b_run.mp4`.) Upload the mp4 to YouTube as **Unlisted** if you are
+the one submitting.
 
-**Pack the zip.** Each zip holds exactly five files at its top level: the evaluator's
+### 8.3 Packing the zips
+
+Each zip holds exactly five files at its top level: the evaluator's
 `result.zip` (never opened or changed) and our four scripts. One paste for 3A:
 
 ```bash
@@ -370,8 +450,54 @@ One paste for 3B:
 cd ~/eyantra/task3b && cp ~/ros2_ws/src/algorithms/scripts/task3b/task3B_*.py . && zip "SC#4372_task3B.zip" result.zip task3B_perception.py task3B_manipulation.py task3B_planning.py task3B_navigation.py && unzip -l "SC#4372_task3B.zip"
 ```
 
-The last part lists what is inside: five files each. Upload the zip and the YouTube link on the
-e-Yantra portal as the submission page describes.
+The last part lists what is inside: five files each.
+
+### 8.4 Checking that everything is right
+
+1. **The marks** (one line each):
+
+   ```bash
+   cat ~/ros2_ws/src/SC-4372-task-3A/summary.txt
+   ```
+   ```bash
+   cat ~/ros2_ws/src/SC-4372-task-3B/summary.txt
+   ```
+
+   Good: 3A shows `Detected 5 of 5, dropped 5 of 5, eBot legs 2 of 2, and the bonus` and a result
+   near 28 / 30. 3B shows the same line for **both** runs and a result near 47 / 50. If a run says
+   `scores 0` or misses items, read the reason it gives, fix it (section 10), and do that whole
+   evaluation again.
+
+2. **The zips match the run.** The `result.zip` inside each zip must be the one from the
+   recorded run. Compare them (one paste; both lines of each pair must be the same):
+
+   ```bash
+   unzip -p ~/eyantra/task3a/"SC#4372_task3A.zip" result.zip | md5sum; md5sum ~/ros2_ws/src/SC-4372-task-3A/result.zip
+   unzip -p ~/eyantra/task3b/"SC#4372_task3B.zip" result.zip | md5sum; md5sum ~/ros2_ws/src/SC-4372-task-3B/result.zip
+   ```
+
+3. **The videos play** and have the right length (one paste; 3A about 4 to 6 minutes, 3B about
+   8 to 12):
+
+   ```bash
+   cd ~/Videos/Screencasts && for v in task3a_run.mp4 task3b_run.mp4; do echo "$v: $(ffprobe -v error -show_entries format=duration -of csv=p=0 $v | cut -d. -f1) s"; done
+   ```
+
+   Then open each mp4 and skim it: the start, `Ready`, the robots and the marks must all be visible.
+
+4. **Same run everywhere.** The marks in the video must be the marks in `summary.txt`. If you ran
+   an evaluation twice, only the last one's `result.zip` is kept, so the video must be of the last
+   run.
+
+### 8.5 Sending the results to Jinadev
+
+Send these files (Google Drive or a pen drive):
+
+- `~/eyantra/task3a/SC#4372_task3A.zip` and `~/Videos/Screencasts/task3a_run.mp4`
+- `~/eyantra/task3b/SC#4372_task3B.zip` and `~/Videos/Screencasts/task3b_run.mp4`
+- both `summary.txt` files (`~/ros2_ws/src/SC-4372-task-3A/summary.txt` and `.../SC-4372-task-3B/summary.txt`)
+
+Never open or re-zip a `result.zip` on the way: copy the files as they are.
 
 ## 9. What the messages mean
 
