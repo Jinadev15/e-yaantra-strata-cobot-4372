@@ -98,7 +98,7 @@ unfold_kp = 1.5                                # 1/s, joint error -> velocity
 unfold_tolerance_rad = 0.02
 
 # --- Cartesian motion ---
-position_kp = 1.5                              # 1/s, position error -> tool speed
+position_kp = 2.0                              # 1/s, position error -> tool speed
 orientation_kp = 1.0                           # 1/s, orientation error -> angular speed
 transit_speed_mps = 0.24
 approach_speed_mps = 0.20
@@ -110,7 +110,7 @@ precise_tolerance_m = 0.008
 settle_s = 0.4                                 # stand still this long on arriving at a precise waypoint
 
 # --- Heights, in base_link ---
-hover_clearance_m = 0.07                       # tool face above an ore's top face before the descent
+lift_clearance_m = 0.07                        # tool face above an item's top face after the grab, for the hold check
 travel_height_m = 0.14                         # tool height while carrying: clears the bay rim by 0.1 m with the ore hanging below
 swing_radius_m = 0.50                          # radius of the arc round the front of the base
 swing_step_deg = 30.0
@@ -128,7 +128,7 @@ ebot_near_min_y_m = 1.0
 touch_force_n = 0.8                            # firm contact; the 0.4 N seen higher up is not the ore
 touch_zone_m = 0.02                            # a touch only counts this close above the estimated top face
 overpress_force_n = 3.0                        # pressing harder than this: stop and back off
-contact_start_m = 0.02                         # the slow final stage starts this far above the estimated top face
+contact_start_m = 0.02                         # the approach stops, and the slow final stage starts, this far above the estimated top face
 contact_speed_mps = 0.01                       # speed of the final stage
 search_depth_m = 0.005                         # the final stage aims this far below the estimated top face: the tool
                                                # spring takes up the difference, and the face lies flat on the ore
@@ -151,7 +151,7 @@ drop_points_world = {
 }
 drop_slot_offsets_m = (0.0, 0.065, -0.065, 0.0)  # along world x: the 2nd, 3rd ... ore of a kind lands beside the first
 release_height_m = 0.10                        # tool height at release: the ore falls into the bay from here
-release_wait_s = 1.0
+release_wait_s = 0.7                           # then release() waits longer while the ore still reads on the tool
 
 # --- The ore package: from the eBot's deck into the crusher hopper ---
 # Hopper rim (crusher collision mesh): x -1.251..-0.648, y -0.31..+0.30, z +0.207 in base_link.
@@ -182,22 +182,41 @@ release_retry_s = 3.0                          # extra wait for an ore that stic
 
 ##################### HELPER FUNCTIONS #######################
 
+def tangent_angle(point_xy, radius):
+    '''
+    Description:    Angle at the base axis between a point and the place where a line from
+                    that point touches the circle of the given radius: 0 for a point on or
+                    inside the circle.
+    '''
+
+    distance = math.hypot(point_xy[0], point_xy[1])
+    return math.acos(radius / distance) if distance > radius else 0.0
+
+
 def arc_points(start_xy, end_xy, radius, step_deg):
     '''
-    Description:    Points on a circle round the base axis, between the azimuths of start_xy
-                    and end_xy. The sweep is end minus start, so an ore on the right (negative
-                    y) and a bay on the left (positive y) are joined across the front of the
-                    base, azimuth 0, and never behind it, where the crusher stands.
+    Description:    The shortest way from start_xy to end_xy that stays outside a circle round
+                    the base axis: along the tangent from start_xy to the circle, round the
+                    circle, and along the tangent out to end_xy. The sweep is end minus start
+                    azimuth, so an ore on the right (negative y) and a bay on the left (positive
+                    y) are joined across the front of the base, azimuth 0, and never behind it,
+                    where the crusher stands.
 
     Returns:
-        list of (x, y) strictly between the two azimuths, every one on the circle.
+        list of (x, y) on the circle, from the first tangent point to the last, at most
+        step_deg apart; empty when the straight line between the two points stays outside it.
     '''
 
     start = math.atan2(start_xy[1], start_xy[0])
     sweep = math.atan2(end_xy[1], end_xy[0]) - start
-    count = max(int(abs(sweep) / math.radians(step_deg)), 1)
-    return [(radius * math.cos(start + sweep * i / count), radius * math.sin(start + sweep * i / count))
-            for i in range(1, count)]
+    turn = math.copysign(1.0, sweep)
+    span = abs(sweep) - tangent_angle(start_xy, radius) - tangent_angle(end_xy, radius)
+    if span <= 0.0:
+        return []
+    first = start + turn * tangent_angle(start_xy, radius)
+    count = max(math.ceil(span / math.radians(step_deg)), 1)
+    return [(radius * math.cos(first + turn * span * i / count), radius * math.sin(first + turn * span * i / count))
+            for i in range(count + 1)]
 
 
 def clearance_height(x, y, low_height, ebot_near):
@@ -937,7 +956,7 @@ class ore_manipulation(Node):
         self.attempts[name] = self.attempts.get(name, 0) + 1
         if self.handling_package:
             self.report_arm_state(ArmState.TAKING)
-        hover = self.target_top() + np.array([0.0, 0.0, hover_clearance_m])
+        hover = self.target_top() + np.array([0.0, 0.0, contact_start_m])
         self.route = self.transit_route(hover, approach_speed_mps)
         self.get_logger().info(
             f'Picking {name} at {np.round(position, 3)} (attempt {self.attempts[name]})')
@@ -989,7 +1008,7 @@ class ore_manipulation(Node):
         self.stop()
         if self.now_s() - self.grab_started_s < grab_wait_s:
             return
-        hover = self.target_top() + np.array([0.0, 0.0, hover_clearance_m])
+        hover = self.target_top() + np.array([0.0, 0.0, lift_clearance_m])
         hover[:2] = self.feedback.tcp_position[:2]
         self.route = RouteFollower([Waypoint(hover, lift_speed_mps)], self.servo)       # verify_hold() stands still before judging
         self.enter(Phase.LIFT)
