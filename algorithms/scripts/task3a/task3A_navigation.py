@@ -40,6 +40,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, Path
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     QoSDurabilityPolicy,
@@ -525,11 +526,13 @@ def main():
 
     ebot_navigator_class = ebot_navigator()                         # creating a new object for class 'ebot_navigator'
 
-    rclpy.spin(ebot_navigator_class)                                # spining on the object to make it alive in ROS 2 DDS
-
-    ebot_navigator_class.destroy_node()                             # destroy node after spin ends
-
-    rclpy.shutdown()                                                # shutdown process
+    try:
+        rclpy.spin(ebot_navigator_class)                                                # spinning on the object to make it alive in ROS 2 DDS
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                                                                            # Ctrl-C or an external shutdown ends the run
+    finally:
+        ebot_navigator_class.destroy_node()                                             # destroy node after spin ends
+        rclpy.try_shutdown()                                                            # shutdown process, unless Ctrl-C already did
 
 
 if __name__ == '__main__':

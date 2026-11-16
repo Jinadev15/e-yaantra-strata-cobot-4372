@@ -44,6 +44,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy, QoSDurabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
@@ -1099,11 +1100,13 @@ def main():
 
     ebot_planner_class = ebot_planner()                                 # creating a new object for class 'ebot_planner'
 
-    rclpy.spin(ebot_planner_class)                                      # spining on the object to make it alive in ROS 2 DDS
-
-    ebot_planner_class.destroy_node()                                   # destroy node after spin ends
-
-    rclpy.shutdown()                                                    # shutdown process
+    try:
+        rclpy.spin(ebot_planner_class)                                                  # spinning on the object to make it alive in ROS 2 DDS
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                                                                            # Ctrl-C or an external shutdown ends the run
+    finally:
+        ebot_planner_class.destroy_node()                                               # destroy node after spin ends
+        rclpy.try_shutdown()                                                            # shutdown process, unless Ctrl-C already did
 
 
 if __name__ == '__main__':

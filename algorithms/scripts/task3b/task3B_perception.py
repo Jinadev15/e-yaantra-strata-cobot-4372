@@ -44,6 +44,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import TransformStamped
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from scipy.spatial.transform import Rotation
@@ -543,12 +544,11 @@ def main():
 
     try:
         rclpy.spin(ore_perception_class)                                                # spinning on the object to make it alive in ROS 2 DDS
-    except KeyboardInterrupt:
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                                                                            # Ctrl-C or an external shutdown ends the run
     finally:
         ore_perception_class.destroy_node()                                             # destroy node after spin ends
-        if rclpy.ok():
-            rclpy.shutdown()                                                            # shutdown process
+        rclpy.try_shutdown()                                                            # shutdown process, unless Ctrl-C already did
 
 
 if __name__ == '__main__':

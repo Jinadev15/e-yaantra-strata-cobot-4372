@@ -46,6 +46,7 @@ from control_msgs.msg import JointJog
 from controller_manager_msgs.srv import SwitchController
 from geometry_msgs.msg import PoseStamped, TwistStamped
 from nav_msgs.msg import Odometry
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 from scipy.spatial.transform import Rotation
@@ -70,9 +71,9 @@ joint_names = [
 
 # What the servo accepts (Task 3: 0.25 m/s, 0.60 rad/s, 0.60 rad/s per joint): a command
 # above one of these is dropped whole, not clamped, so each cap keeps a margin below it.
-cap_linear_mps = 0.22
-cap_angular_rps = 0.50
-cap_joint_rps = 0.50
+cap_linear_mps = 0.24
+cap_angular_rps = 0.55
+cap_joint_rps = 0.55
 
 # The handover with the eBot: latched string topics, so a late subscriber reads the state at once.
 ebot_state_topic = '/handover/ebot'
@@ -93,23 +94,23 @@ unfold_target = {
     'elbow_joint': -1.60,
     'wrist_1_joint': -1.90,
 }
-unfold_kp = 0.8                                # 1/s, joint error -> velocity
+unfold_kp = 1.5                                # 1/s, joint error -> velocity
 unfold_tolerance_rad = 0.02
 
 # --- Cartesian motion ---
 position_kp = 1.5                              # 1/s, position error -> tool speed
 orientation_kp = 1.0                           # 1/s, orientation error -> angular speed
-transit_speed_mps = 0.21
-approach_speed_mps = 0.15
-descent_speed_mps = 0.025                      # the arm coasts about 5 mm at 0.02 m/s and 50 mm at 0.10 m/s
-lift_speed_mps = 0.06
+transit_speed_mps = 0.24
+approach_speed_mps = 0.20
+descent_speed_mps = 0.06                       # first stage: proportional control brakes it well before the contact stage
+lift_speed_mps = 0.12
 travel_tolerance_m = 0.02
 pass_tolerance_m = 0.05                        # a pass-through waypoint hands over this close, at full speed
 precise_tolerance_m = 0.008
 settle_s = 0.4                                 # stand still this long on arriving at a precise waypoint
 
 # --- Heights, in base_link ---
-hover_clearance_m = 0.12                       # tool face above an ore's top face before the descent
+hover_clearance_m = 0.07                       # tool face above an ore's top face before the descent
 travel_height_m = 0.14                         # tool height while carrying: clears the bay rim by 0.1 m with the ore hanging below
 swing_radius_m = 0.50                          # radius of the arc round the front of the base
 swing_step_deg = 30.0
@@ -782,7 +783,7 @@ class ore_manipulation(Node):
                                           transit_speed_mps, pass_tolerance_m, through=True))
         above = clearance_height(destination[0], destination[1], low_height, near)
         waypoints.append(Waypoint(np.array([destination[0], destination[1], max(above, destination[2])]),
-                                  transit_speed_mps))
+                                  transit_speed_mps, pass_tolerance_m, through=True))
         waypoints.append(Waypoint(np.asarray(destination, dtype=float), destination_speed,
                                   precise_tolerance_m, settle=True))
         return RouteFollower(waypoints, self.servo)
@@ -990,7 +991,7 @@ class ore_manipulation(Node):
             return
         hover = self.target_top() + np.array([0.0, 0.0, hover_clearance_m])
         hover[:2] = self.feedback.tcp_position[:2]
-        self.route = RouteFollower([Waypoint(hover, lift_speed_mps, precise_tolerance_m, settle=True)], self.servo)
+        self.route = RouteFollower([Waypoint(hover, lift_speed_mps)], self.servo)       # verify_hold() stands still before judging
         self.enter(Phase.LIFT)
 
     def lift(self):
@@ -1111,12 +1112,11 @@ def main():
 
     try:
         rclpy.spin(ore_manipulation_class)                                              # spinning on the object to make it alive in ROS 2 DDS
-    except KeyboardInterrupt:
-        ore_manipulation_class.stop()                                                   # leave the arm standing still
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass                                                                            # Ctrl-C or an external shutdown ends the run
     finally:
         ore_manipulation_class.destroy_node()                                           # destroy node after spin ends
-        if rclpy.ok():
-            rclpy.shutdown()                                                            # shutdown process
+        rclpy.try_shutdown()                                                            # shutdown process, unless Ctrl-C already did
 
 
 if __name__ == '__main__':
