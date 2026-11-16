@@ -134,10 +134,11 @@ start_radius_m = 1.0                          # a path is planned only when the 
 # Before a step is planned, lidar returns that no mapped rock explains are added to the
 # planning map as rocks. The published path then still crosses no occupied /map cell.
 scan_window = 5                               # scans taken standing still; the per-beam median removes sensor noise
-unmapped_min_distance_m = 0.15                # a return this far from every mapped rock is something /map does not show
-unmapped_max_range_m = 4.0                    # farther returns are left to the next step's look
+unmapped_min_distance_m = 0.08                # a return this far from every mapped rock is something /map does not show (or a rock off its mapped place)
+unmapped_max_range_m = 8.0                    # covers a whole step from its start; farther returns are left to the next look
 unmapped_support = 3                          # a return counts only with this many others close by: a lone return is noise
 unmapped_support_radius_m = 0.10
+unmapped_support_beams = 3.0                  # far away the beams spread out: the neighbourhood grows to this many beam gaps
 unmapped_mark_radius_m = 0.05                 # each counted return blocks a disc this wide on the planning map
 scan_wait_s = 3.0                             # plan on the map alone if no full window of still scans arrives in this time
 
@@ -145,6 +146,14 @@ scan_wait_s = 3.0                             # plan on the map alone if no full
 request_retry_s = 1.0                         # wait between requests when the service refuses
 request_max_tries = 30
 settle_after_package_s = 2.0                  # let the package come to rest on the deck before driving off
+
+# --- A rock the step's plan did not know about blocks the way ---
+# The navigator stops in front of anything in its path. When the eBot gets no closer to the
+# step's end for this long, the step is planned again from where it stands, with the rock
+# now in view of the lidar.
+progress_timeout_s = 8.0
+progress_min_m = 0.10                         # getting this much closer to the end counts as progress
+blocked_look_m = 2.0                          # planning again, every lidar return this close counts as a rock
 
 
 ##################### HELPER FUNCTIONS #######################
@@ -609,36 +618,58 @@ class ScanMemory:
     def clear(self):
         self.ranges.clear()
 
-    def unmapped_points(self, grid, pose, mount):
+    def world_points(self, pose, mount, max_range_m):
         '''
         Args:
-            grid (OccupancyMap):    the map to explain the returns with
             pose (Pose):            the body in the map frame
             mount (tuple):          (x, y, yaw) of the lidar on the body
+            max_range_m (float):    returns farther than this are left out
 
         Returns:
-            ndarray (n, 2) of map-frame points the map does not explain, noise removed.
+            ndarray (n, 2) of map-frame points, one per beam with a steady return.
         '''
 
         scan = self.scan
         stacked = np.vstack(self.ranges)
         stacked[~np.isfinite(stacked)] = np.nan
-        ranges = np.nanmedian(stacked, axis=0) if np.isfinite(stacked).any() else np.full(stacked.shape[1], np.nan)
+        seen = np.isfinite(stacked).any(axis=0)                                          # beams with at least one return
+        ranges = np.full(stacked.shape[1], np.nan)
+        ranges[seen] = np.nanmedian(stacked[:, seen], axis=0)
         angles = scan.angle_min + np.arange(len(ranges)) * scan.angle_increment
-        valid = np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= min(scan.range_max, unmapped_max_range_m))
-        if not valid.any():
-            return np.empty((0, 2))
+        valid = np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= min(scan.range_max, max_range_m))
         ranges, angles = ranges[valid], angles[valid] + mount[2]
         body = np.column_stack((mount[0] + ranges * np.cos(angles), mount[1] + ranges * np.sin(angles)))
         cos_yaw, sin_yaw = math.cos(pose.yaw), math.sin(pose.yaw)
-        world = np.column_stack((pose.x + cos_yaw * body[:, 0] - sin_yaw * body[:, 1],
-                                 pose.y + sin_yaw * body[:, 0] + cos_yaw * body[:, 1]))
-        distance = grid.rock_distance_at(world)
-        unexplained = world[np.isfinite(distance) & (distance > unmapped_min_distance_m)]
-        if len(unexplained) <= unmapped_support:
+        return np.column_stack((pose.x + cos_yaw * body[:, 0] - sin_yaw * body[:, 1],
+                                pose.y + sin_yaw * body[:, 0] + cos_yaw * body[:, 1]))
+
+    def supported(self, points, pose):
+        '''The points with enough neighbours to be a surface: a lone return is noise.'''
+        if len(points) <= unmapped_support:
             return np.empty((0, 2))
-        neighbours = cKDTree(unexplained).query_ball_point(unexplained, unmapped_support_radius_m, return_length=True)
-        return unexplained[neighbours > unmapped_support]
+        reach = np.hypot(points[:, 0] - pose.x, points[:, 1] - pose.y)
+        radius = np.maximum(unmapped_support_radius_m, unmapped_support_beams * reach * abs(self.scan.angle_increment))
+        neighbours = cKDTree(points).query_ball_point(points, radius, return_length=True)
+        return points[neighbours > unmapped_support]
+
+    def unmapped_points(self, grid, pose, mount):
+        '''
+        Returns:
+            ndarray (n, 2) of map-frame points that no mapped rock explains, noise removed.
+        '''
+
+        world = self.world_points(pose, mount, unmapped_max_range_m)
+        distance = grid.rock_distance_at(world)
+        return self.supported(world[np.isfinite(distance) & (distance > unmapped_min_distance_m)], pose)
+
+    def nearby_points(self, pose, mount):
+        '''
+        Returns:
+            ndarray (n, 2) of every surface the lidar sees close by, mapped or not: a rock a
+            few centimetres off its mapped place is placed where it really is.
+        '''
+
+        return self.supported(self.world_points(pose, mount, blocked_look_m), pose)
 
 
 class LapPhase(Enum):
@@ -732,6 +763,8 @@ class ebot_planner(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.lidar_mount = None
         self.plan_wait_since_s = None                                                   # when the eBot became ready to plan this step
+        self.closest_to_end_m = math.inf                                                # progress along the current step
+        self.progress_since_s = None
         self.publish_state(EbotState.EN_ROUTE)
 
         ############################################
@@ -830,29 +863,33 @@ class ebot_planner(Node):
         ############################################
 
 
-    def step_planner(self):
+    def step_planner(self, blocked=False):
         '''
         The planner for the current step: on /map with every unmapped return the lidar sees
-        from here added as a rock, or on /map alone when nothing unmapped is in view.
+        from here added as a rock, or on /map alone when nothing unmapped is in view. When
+        the eBot has been blocked, every return close by is added, mapped or not.
         '''
 
         if not (self.scans.full and self.read_lidar_mount()):
             return self.planner
-        points = self.scans.unmapped_points(self.grid, self.pose, self.lidar_mount)
+        if blocked:
+            points = self.scans.nearby_points(self.pose, self.lidar_mount)
+        else:
+            points = self.scans.unmapped_points(self.grid, self.pose, self.lidar_mount)
         if len(points) == 0:
             return self.planner
-        self.get_logger().info(f'Step {self.step + 1}: {len(points)} lidar returns not on the map, '
-                               f'planning round them')
+        self.get_logger().info(f'Step {self.step + 1}: {len(points)} lidar returns added as rocks')
         return PathPlanner(self.grid.with_obstacles(points, unmapped_mark_radius_m))
 
 
-    def plan_path(self, start, end):
+    def plan_path(self, start, end, blocked=False):
         '''
         Description:    Plans a path from 'start' to 'end' that stays clear of every rock.
 
         Args:
             start (tuple):    (x, y, yaw) where the step begins, in the map frame
             end (tuple):      (x, y, yaw) where the step ends, in the map frame
+            blocked (bool):   the eBot was stopped on its way: every close lidar return is a rock
 
         Returns:
             list:             [(x, y), ...] from 'start' to 'end', or None if no path was found
@@ -862,10 +899,10 @@ class ebot_planner(Node):
 
         ############ ADD YOUR CODE HERE ############
 
-        planner = self.step_planner()
+        planner = self.step_planner(blocked)
         planned = planner.plan(start[:2], end[:2])
         if planned is None and planner is not self.planner:
-            self.get_logger().warn(f'Step {self.step + 1}: no way round the unmapped returns; planning on /map alone')
+            self.get_logger().warn(f'Step {self.step + 1}: no way round the lidar returns; planning on /map alone')
             planned = self.planner.plan(start[:2], end[:2])
         if planned is not None:
             points, clearance = planned
@@ -1011,6 +1048,7 @@ class ebot_planner(Node):
         self.end_yaw = self.arrival_yaw(points, accepted_end_yaws[self.step])
         self.publish_path(points, start, (end[0], end[1], self.end_yaw))
         self.phase = LapPhase.DRIVE
+        self.reset_progress()
         self.get_logger().info(f'Step {self.step + 1}: path published, ending at yaw {self.end_yaw:.2f}')
 
 
@@ -1027,9 +1065,12 @@ class ebot_planner(Node):
         '''Wait for the eBot to stop on the step's end pose, then move on.'''
 
         end = steps[self.step][1]
-        on_pose = (math.hypot(self.pose.x - end[0], self.pose.y - end[1]) <= finish_position_m
-                   and abs(wrap_angle(self.pose.yaw - self.end_yaw)) <= finish_yaw_rad)
-        if not on_pose or self.stillness.still_for(self.now_s()) < still_hold_s:
+        to_end = math.hypot(self.pose.x - end[0], self.pose.y - end[1])
+        on_pose = to_end <= finish_position_m and abs(wrap_angle(self.pose.yaw - self.end_yaw)) <= finish_yaw_rad
+        if not on_pose:
+            self.watch_progress(to_end)
+            return
+        if self.stillness.still_for(self.now_s()) < still_hold_s:
             return
 
         self.get_logger().info(f'Step {self.step + 1} finished')
@@ -1040,6 +1081,38 @@ class ebot_planner(Node):
             self.phase = LapPhase.HANDOVER
         else:
             self.next_step()
+
+
+    def reset_progress(self):
+        '''Start measuring progress afresh, for a newly published path.'''
+        self.closest_to_end_m = math.inf
+        self.progress_since_s = self.now_s()
+
+
+    def watch_progress(self, to_end):
+        '''
+        Plan the step again from where the eBot stands once it has stopped getting closer to
+        the end: something the plan did not know about is in the way, and the lidar sees it now.
+        '''
+
+        if to_end < self.closest_to_end_m - progress_min_m:
+            self.closest_to_end_m = to_end
+            self.progress_since_s = self.now_s()
+            return
+        stuck = self.now_s() - self.progress_since_s >= progress_timeout_s
+        if not stuck or self.stillness.still_for(self.now_s()) < start_hold_s or not self.scans.full:
+            return
+        self.get_logger().warn(f'Step {self.step + 1}: no progress for {progress_timeout_s:.0f} s at '
+                               f'({self.pose.x:.2f}, {self.pose.y:.2f}): planning again from here')
+        self.reset_progress()
+        here = (self.pose.x, self.pose.y, self.pose.yaw)
+        end = steps[self.step][1]
+        points = self.plan_path(here, end, blocked=True)
+        if points is None:
+            self.get_logger().error(f'Step {self.step + 1}: no way on from here, trying again')
+            return
+        self.end_yaw = self.arrival_yaw(points, accepted_end_yaws[self.step])
+        self.publish_path(points, here, (end[0], end[1], self.end_yaw))
 
 
     def handover_phase(self):

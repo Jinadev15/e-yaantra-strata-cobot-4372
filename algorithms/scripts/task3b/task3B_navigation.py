@@ -96,9 +96,7 @@ speed_window = 8                              # odometry speeds averaged: a sing
 # --- Lidar safety layer ---
 corridor_margin_m = 0.04                      # clearance kept beside the body
 slow_range_m = 0.60                           # start slowing this far beyond the front edge
-stop_gap_m = 0.12                             # stop and turn away inside this gap
-avoid_turn_rps = 0.5
-turn_toward_path_rad = 0.15                   # stopped by a rock: turn back to the path when facing this far off it
+stop_gap_m = 0.12                             # stop inside this gap and wait: the planner plans a new way round from here
 
 
 ##################### HELPER FUNCTIONS #######################
@@ -141,15 +139,15 @@ class ObstacleGuard:
 
     Description:    Safety layer between the path follower and the wheels. It looks at the
                     corridor the body is about to sweep: anything in it slows the eBot down,
-                    and anything too close stops it and turns it away.
+                    and anything too close stops it. A stopped eBot stands still, so the
+                    planner sees it make no progress and plans a new way round from there.
     '''
 
-    def limit(self, linear, angular, obstacles, heading_error):
+    def limit(self, linear, angular, obstacles):
         '''
         Args:
             linear, angular (float):    the follower's wish
             obstacles (ndarray):        lidar points in the body frame, shape (n, 2)
-            heading_error (float):      how far the eBot faces from the path, in radians
 
         Returns:
             (linear, angular) after the safety layer.
@@ -169,10 +167,7 @@ class ObstacleGuard:
             scale = (gap - stop_gap_m) / (slow_range_m - stop_gap_m)
             return linear * min(max(scale, 0.0), 1.0), angular
 
-        if abs(heading_error) > turn_toward_path_rad:
-            return 0.0, angular                   # the path itself is clear: first face it, standing still
-        side = float(np.median(ahead[:, 1]))
-        return 0.0, -math.copysign(avoid_turn_rps, side if abs(side) > 1.0e-3 else 1.0)
+        return 0.0, 0.0
 
 
 class FollowPhase(Enum):
@@ -245,7 +240,7 @@ class PathFollower:
         angular = self._steer(error)
 
         if to_end > guard_release_m:
-            linear, angular = self.guard.limit(linear, angular, obstacles, error)
+            linear, angular = self.guard.limit(linear, angular, obstacles)
         return self._clip(linear, angular)
 
     def _start_turn(self, x, y, yaw):
